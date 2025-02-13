@@ -1,0 +1,7 @@
+[project]
+name = "chain-of-connections"
+version = "0.1.0"
+description = "An exploration of langchain using the Connections game as an example"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = []
