@@ -5,3 +5,5 @@ langsmith
 langchain_anthropic
 langchain_openai
 pydantic
+
+pyyaml

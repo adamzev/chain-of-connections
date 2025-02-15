@@ -1,0 +1,28 @@
+model: gpt-4o
+temperature: 0.5
+
+prompts:
+  generator:
+    system: |
+      Solve a Connections word puzzle by grouping 16 words into four sets of four based on shared connections. Some links are obvious, while others require wordplay or modifications. Groups are color-coded by difficulty:
+        Yellow (most straightforward): Often a shared meaning
+        Green: sometimes a shared category
+        Blue: sometimes components of a category
+        Purple (most difficult): Requires phrases, wordplay, or subtle links
+
+      The above is a loose guideline and other types of connections exist such as appearing in the same piece of popular culture or wordplay (homonyms).
+  
+      Common words may refer to their common meanings or function as proper nouns, such as brand names, titles, or other things from popular culture.
+
+      Identify four groups of four words and state their connections.
+
+  evaluator:
+    system: |      
+      Check if the solution below is correct. You are checking for misgrouped words but can assume it is a valid possible solution.
+      If a connection is overly complex or relies on "and" (e.g., foods and silverware), it's likely incorrect.
+      If the solution is correct, submit the results (submit=True) without advice.
+      If incorrect, provide specific advice to a new solver regarding what words may go together and which words do not.
+      
+      Solution:
+
+

@@ -1,8 +1,10 @@
 import os
 from typing import Literal
 
+import yaml
 from dotenv import load_dotenv
 from langchain_anthropic import ChatAnthropic
+from langchain_core.prompts import ChatPromptTemplate
 from langchain_openai import ChatOpenAI
 from langgraph.func import RetryPolicy, entrypoint, task
 from pydantic import BaseModel, Field
@@ -10,8 +12,10 @@ from pydantic import BaseModel, Field
 from src.utils.json_helpers import dump_json, load_json
 
 CONNECTIONS_FILEPATH = "data/connections.jsonl"
+PROMPTS_FILEPATH = "prompts/prompts.yml"
 STATS_FILEPATH = "output/stats.json"
 MAX_TRIES = 3
+PROMPT_SETTINGS = yaml.safe_load(open(PROMPTS_FILEPATH))
 
 
 def custom_retry_on(exc: Exception) -> bool:
@@ -81,39 +85,31 @@ class Feedback(BaseModel):
         description="True if the solution is correct, False otherwise.",
     )
     advice: str | None = Field(
-        description="Forward looking advice regarding how to solve this puzzle. The advice should not reference the present solution groups as you are advising a new solver.",
+        description="Advice regarding how to solve this puzzle. State specific changes to make to correct the solution.",
     )
 
 
 class Solution(BaseModel):
-    yellow_group: set[str] = Field(
+    yellow_group: list[str] = Field(
         description="The 4 words that go best together for the yellow group.",
-        min_items=4,
-        max_items=4,
     )
     yellow_group_reason: str = Field(
         description="The very brief reason why the words go together for the yellow group.",
     )
-    green_group: set[str] = Field(
+    green_group: list[str] = Field(
         description="The 4 words that go best together for the green group.",
-        min_items=4,
-        max_items=4,
     )
     green_group_reason: str = Field(
         description="The very brief reason why the words go together for the green group.",
     )
-    blue_group: set[str] = Field(
+    blue_group: list[str] = Field(
         description="The 4 words that go best together for the blue group.",
-        min_items=4,
-        max_items=4,
     )
     blue_group_reason: str = Field(
         description="The very brief reason why the words go together for the blue group.",
     )
-    purple_group: set[str] = Field(
+    purple_group: list[str] = Field(
         description="The 4 words that go best together for the purple group.",
-        min_items=4,
-        max_items=4,
     )
     purple_group_reason: str = Field(
         description="The very brief reason why the words go together for the purple group.",
@@ -150,13 +146,23 @@ def validate_solution(solution, puzzle_words):
     Validate the solution
 
     If the solutions are not a subset of the puzzle words, raise an error
-    Pydantic will handle the rest of the validation regarding 4 words in each group
     '''
+    # check that each group has 4 words
+
+    if len(solution.yellow_group) != 4:
+        raise ValidationError("Yellow group must have 4 words.")
+    if len(solution.green_group) != 4:
+        raise ValidationError("Green group must have 4 words.")
+    if len(solution.blue_group) != 4:
+        raise ValidationError("Blue group must have 4 words.")
+    if len(solution.purple_group) != 4:
+        raise ValidationError("Purple group must have 4 words.")
+
     puzzle_words_set = set(puzzle_words)
-    puzzle_words_set -= solution.yellow_group
-    puzzle_words_set -= solution.green_group
-    puzzle_words_set -= solution.blue_group
-    puzzle_words_set -= solution.purple_group
+    puzzle_words_set -= set(solution.yellow_group)
+    puzzle_words_set -= set(solution.green_group)
+    puzzle_words_set -= set(solution.blue_group)
+    puzzle_words_set -= set(solution.purple_group)
     if len(puzzle_words_set) != 0:
         raise ValidationError(
             "Solution groups must be a subset of the puzzle words."
@@ -169,27 +175,20 @@ def validate_solution(solution, puzzle_words):
 def llm_call_generator(solver, puzzle_words: list[str], feedback: Feedback):
     """LLM generates a connections guess"""
 
-    prompt = (
-        "You are trying to solve a Connections word puzzle. To solve a connections word puzzle, you split 16 words into 4 groups of 4 based on which words share a connection. "
-        "Some connections are more obvious than others. However, once you see the connection, it should be clear. \n"
-        "The words may include proper nouns. \n"
-        "Each group is assigned a color name which indicates how straightforward the connection is. The groups are labeled rated yellow, green, blue, or purple, with yellow being the most straightforward and purple being the most difficult. \n"
-        "Common connections types are the yellow group having a shared meaning and the green group having a shared category. The blue group may be components of a shared category."
-        "The purple group usually requires putting the word into a phrase or modifying the words (pet types with a letter removed for example)"
-        "However, these are loose guidelines and other types of connections exist such as appearing in the same piece of popular culture or wordplay (homonyms).\n"
-        "Out of all the following options, pick 4 groups of 4 words that form a connection together and state the connection.  \n"
-        f"Words:\n {"\n".join(puzzle_words)}"
-    )
+    puzzle_text = ""
+    for i in range(4):
+        puzzle_text += ', '.join(puzzle_words[i * 4 : (i + 1) * 4]) + '\n'
+
+    human_message = "Connections: \n" + puzzle_text
 
     if feedback:
-        f"\nFeedback: {feedback.advice}"
+        human_message += f"\nFeedback: {feedback.advice}"
 
     try:
-        solution = solver.invoke(prompt)
+        solution = solver.invoke(human_message)
     except Exception as e:
         print(e)
         raise e
-    solution = solver.invoke(prompt)
     print(solution)
     validate_solution(solution, puzzle_words)
     return solution
@@ -198,18 +197,8 @@ def llm_call_generator(solver, puzzle_words: list[str], feedback: Feedback):
 @task(retry=retry_policy)
 def llm_call_evaluator(evaluator, solution: Solution):
     """LLM evaluates the picks"""
-    feedback = evaluator.invoke(
-        "You are trying to evaulate a solution to a Connections word puzzle. To solve a connections word puzzle, you split 16 words into 4 groups of 4 based on which words share a connection. "
-        "Some connections are more obvious than others. However, once you see the connection, it should be clear. \n"
-        "The words may include proper nouns. \n"
-        "Each group is assigned a color name which indicates how straightforward the connection is. The groups are labeled rated yellow, green, blue, or purple, with yellow being the most straightforward and purple being the most difficult. \n"
-        "Common connections types are the yellow group having a shared meaning and the green group having a shared category. The blue group may be components of a shared category."
-        "The purple group usually requires putting the word into a phrase or modifying the words (pet types with a letter removed for example)"
-        "However, these are loose guidelines and other types of connections exist such as appearing in the same piece of popular culture or wordplay (homonyms).\n"
-        f"Evaluate if the connections are correct. The solution is a valid solution but may have items that have been put in the wrong group.\n"
-        f"For example, if the reason a group of words is connected is complicated or involves the word 'and' (for example 'foods **and** stuffy people smell')  it is likely incorrect."
-        f"If the solution is correct, submit the results (submit=True) and skip providing advice. If the solution is incorrect, provide specific advice to a new solver regarding what words may go together and which words do not. \n"
-        f"If you reference a group, specify what words are in the group as the new solver cannot see the previous solution. \n"
+
+    human_message = (
         f"Solutions:\n"
         f"Yellow Group Reason: {solution.yellow_group_reason}\n"
         f"Yellow Group: {', '.join(solution.yellow_group)}\n"
@@ -220,6 +209,8 @@ def llm_call_evaluator(evaluator, solution: Solution):
         f"Purple Group Reason: {solution.purple_group_reason}\n"
         f"Purple Group: {', '.join(solution.purple_group)}\n"
     )
+
+    feedback = evaluator.invoke(human_message)
     return feedback
 
 
@@ -228,7 +219,7 @@ def optimizer_workflow(input):
     solver = input["solver"]
     evaluator = input["evaluator"]
     puzzle_words = input["puzzle_words"]
-    starting_puzzle_words = puzzle_words.copy()
+
     tries = 0
     solution = []
     feedback = None
@@ -282,17 +273,41 @@ def solve_puzzle(solver, evaluator, puzzle_words, solution):
 
 def main():
     load_dotenv()
-    # Augment the LLM with schema for structured output
-    # claude-3-5-haiku-latest
-    # claude-3-5-sonnet-latest
-    # llm = ChatAnthropic(model="claude-3-5-sonnet-latest")
-    llm = ChatOpenAI(model="gpt-4", temperature=0.5)
-    solver = llm.with_structured_output(Solution)
-    evaluator = llm.with_structured_output(Feedback)
-    stats = {}
+
+    if PROMPT_SETTINGS['model'].startswith('claude'):
+        llm = ChatAnthropic(model=PROMPT_SETTINGS['model'])
+    else:
+        llm = ChatOpenAI(
+            model=PROMPT_SETTINGS['model'],
+            temperature=PROMPT_SETTINGS['temperature'],
+        )
+
+    prompt = ChatPromptTemplate.from_messages(
+        [
+            ("system", PROMPT_SETTINGS['prompts']['generator']['system']),
+            ("human", "{input}"),
+        ]
+    )
+    prompt = ChatPromptTemplate.from_messages(
+        [
+            ("system", PROMPT_SETTINGS['prompts']['evaluator']['system']),
+            ("human", "{input}"),
+        ]
+    )
+
+    solver_structured = llm.with_structured_output(Solution)
+    evaluator_structured = llm.with_structured_output(Feedback)
+    solver = prompt | solver_structured
+    evaluator = prompt | evaluator_structured
+
     connections = load_json(CONNECTIONS_FILEPATH)
-    stats = load_json(STATS_FILEPATH)
-    for i in range(40):
+
+    stats = {}
+    if os.path.exists(STATS_FILEPATH):
+        stats = load_json(STATS_FILEPATH)
+
+    NUMBER_OF_PUZZLES = 40
+    for i in range(NUMBER_OF_PUZZLES):
         if str(i) in stats:
             print("skipping", i)
             continue
